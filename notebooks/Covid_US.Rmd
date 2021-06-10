@@ -1,0 +1,193 @@
+---
+title: "Covid EUA - Trabalho A2"
+author: "Rener Oliveira"
+date: "8 de junho de 2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Manipulação do Dado
+
+O objetivo das células seguintes é unificar os dados de mortes diárias por estado e de população por estado em um único dataset com incidencia semanal, i.e, números de casos por milhão em cada semana, em cada estado. O objetivo final do trabalho é reproduzir o heatmap [desta fonte](https://www.royfrancis.com/a-guide-to-elegant-tiled-heatmaps-in-r-2019/) com dados de mortes por covid.
+
+```{r,message=FALSE,warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(RColorBrewer)
+library(forcats)
+library(tools)
+library(stringr)
+```
+
+
+```{r}
+covid_path = "../data/covid_us_cleaned.csv"
+census_path = "../data/census_cleaned.csv"
+covid <- read.csv(covid_path) %>% select(-X)
+census <- read.csv(census_path) %>% select(-X)
+names(census) <- c('state','population')
+covid$submission_date = ymd(covid$submission_date)
+glimpse(covid)
+```
+```{r}
+#Junção dos dados
+covid <- covid %>% left_join(census,by='state')
+#Agregação por semana
+weekly_deaths <- covid %>% group_by(week,state) %>% 
+  summarise(new_death=sum(new_death,na.rm=TRUE),
+            pop = population) %>% 
+  mutate(incidence = new_death*1000000/pop) %>% 
+  group_by(week,state) %>% do(head(.,1)) %>% 
+  select(week,state,incidence)
+glimpse(weekly_deaths)
+```
+
+Transformamos o número da semana em uma data referente ao domingo daquela semana específica, tomando como base que o domingo da semana 1 foi 01/03/2020.
+
+```{r}
+#Transformando número da coluna em data (domingo referente à semana)
+weekly_deaths <- weekly_deaths %>% mutate(week = ymd("2020-03-01")+(week-1)*7) 
+weekly_deaths <- weekly_deaths[weekly_deaths$week!=ymd("2021-06-06"),]
+```
+
+Veja agora algumas linhas do dado:
+```{r}
+weekly_deaths[c(1:5,3000:3005),,]
+```
+
+# Primeiro Plot
+
+Reproduzindo o primeiro plot da referência:
+
+```{r}
+ggplot(weekly_deaths,aes(x=week,state,fill= incidence)) + 
+  geom_tile(colour='white',size=0.15) +
+  labs(x="",y="")+
+  scale_y_discrete(expand=c(0,0)) +
+  scale_x_date(expand=c(0,0),
+                   breaks = ymd("2020-03-01")+seq(0,70,length.out = 8)*7)+
+  theme_grey(base_size = 8) + 
+  theme(
+    legend.text = element_text(face='bold'),
+    axis.ticks = element_line(size=0.35),
+    plot.background = element_blank(),
+    panel.border = element_blank()
+  )
+```
+
+# Plot Final
+
+Analisando o histograma (basicão) de incidência logarítmica nos dá uma ideia de onde colocar os pontos de corte, de forma a deixar as classes bem distribuídas.
+
+```{r}
+hist(log10(weekly_deaths$incidence))
+```
+```{r}
+incidence = weekly_deaths$incidence
+weekly_deaths$inc_factor <- cut(incidence,
+                               breaks=c(-1,0,1,5,10,25,50,75,max(incidence,na.rm=T)),
+                               labels=c("0","0-1","1-5","1-10","10-25","25-50","50-75",">75"))
+```
+
+Para a paleta de cores vamos selecionar a Orange do Colorbrewer, com 8 cores, pois a cor mais forte trás uma sensação de gravidade, que é e mensagem que queremos passar quando algum estado está com incidência de mortes elevada. O fato de ser sequêncial, trás uma sensação de melhora conforme as cores vão ficando mais claras.
+
+```{r,fig.height=2.5,fig.width=8}
+display.brewer.pal(8,"Oranges")
+# display.brewer.pal(4,"Blues")
+```
+```{r}
+pallete <- brewer.pal(8,"Oranges")
+# pallete <- c(rev(brewer.pal(4,"Blues")),brewer.pal(5,"Oranges")[-1])
+pallete
+```
+
+```{r}
+#Função auxiliar para pegar primeira semana do mês presente no dado
+get_cut <- function(date){
+  f<-weekly_deaths %>% filter(week>=date)
+  return(f$week[1])
+}
+dates = seq.Date(ymd("2020-03-01"),ymd("2021-05-01"),by='month')
+
+for (i in 1:length(dates)){
+  dates[i] = get_cut(dates[i])
+}
+labels = paste(str_pad(month(dates), 2, pad = "0"),year(dates)-2000,sep="/")
+labels
+```
+
+
+```{r,fig.height=6,fig.width=8}
+text_color <- "#585858"
+
+p <- ggplot()+
+  geom_tile(data=weekly_deaths,aes(x=week,y=fct_rev(state),fill=inc_factor),
+            colour="white",size=0.15)+
+  guides(fill = guide_legend(title="Mortes\npor milhão"))+
+  labs(x="",y="",title="Incidência de Mortes por Covid nos EUA")+
+  scale_y_discrete(expand=c(0,0))+
+  scale_x_date(expand=c(0,0),breaks = dates,labels=labels)+
+  scale_fill_manual(values=pallete)+
+  geom_segment(aes(x=ymd("2020-12-13"), xend=ymd("2020-12-13"), 
+                   y=0.5, yend=50.5,color="Vacina introduzida"), size=3.5, alpha=0.65) +
+  scale_color_manual(name = "", values = c("Vacina introduzida"="black"))+
+  theme_grey(base_size=10) +
+  theme(legend.position="right",legend.direction="vertical",
+        legend.title=element_text(colour=text_color),
+        legend.margin=margin(grid::unit(0,"cm")),
+        legend.text=element_text(colour=text_color,size=7,face="bold"),
+        legend.key.height=grid::unit(0.8,"cm"),
+        legend.key.width = grid::unit(0.2,"cm"),
+        axis.text.x=element_text(size=8,colour=text_color,angle=0),
+        axis.text.y=element_text(vjust=0.2,colour=text_color),
+        axis.ticks=element_line(size=0.4),
+        plot.background=element_blank(),
+        panel.border = element_blank(),
+        plot.margin = margin(0.7,0.4,0.1,0.2,"cm"),
+        plot.title = element_text(colour=text_color,hjust=0,size=12,face = "bold"))
+ggsave(p,filename="covid_us.png",height=6,width=8.8,units="in",dpi=200)
+p
+```
+
+# Descrição
+
+O gráfico acima tem função explanatória, e visa mostrar a evolução da incidência de mortes por covid em cada estado dos EUA, semana a semana. Além disso existe uma marcação chamando atenção para um evento específico no tempo que foi o início da vacinação. As variáveis mapeadas são:
+
+- Eixo x: Semana epidemiológica (primeira semana foi escolhida como 01/03/2020)
+- Eixo y: Estados americanos
+- Cor: Incidência de mortes (total de mortes da semana por milhão de habitante)
+
+A justificativa da paleta escolhida foi dada acima, mas em resumo, queremos mapear altas incidências em cores mais fortes, para passar a noção da gravidade da situação. A paleta é sequencial monocromática pela continuidade e a noção de ordem do dado. O tom de laranja foi escolhido por ser chamativo e remeter de certa forma à situações críticas/negativas.
+
+A anotação da legenda do eixo x foi escolhida de forma mensal. Como o dado foi tratado de forma semanal, escolhemos os pontos de corte referente à primeira semana disponível no dataframe para determinado mês, e legendamos tal ponto com a marca do mês. Assim o ponto "05/20" por exemplo representa a primeira semana do mês de Maio de 2020 dsponível nas linhas. Dessa forma percebe-se que a vacinação foi introduzida por volta da segunda semana de dezembro.
+
+# Comentários e conclusão
+
+Bibliotecas úteis:
+
+- ggplot e dplyr: dispensam comentários;
+- pandas, datetime e numpy: para o pré-processamento dos dados em python;
+- lubridate: manipulação de datas na coluna "week";
+- RColorBrewer: gerenciamento da paleta de cores;
+- forcats: reordenação dos estados em ordem alfabética;
+- stringr: criação das legendas mensais do eixo x.
+
+O resultado alcançado foi bastante satisfatório, conseguimos reproduzir o gráfico da referência e ganhar alguns insights sobre a situação:
+
+- A campanha de vacinação começa nos piores momentos da pandemia;
+- O momento entre Nov/20 - Jan/21 foi pior do que a primeira onda da pandemia em Mar/20 - Mai/20;
+- Como esperado, existe um atraso entre início das vacinas e declínio de mortes;
+- Não necessariamente o declíno de mortes observados é consequência da campanha de vacinação, precisaríamos de mais dados futuros para poder concluir isso de fato.
+
+Como trabalho futuro, uma ideia interessante seria refazer esse gráfico alguns meses depois de os Estado Unidos atingirem um percentual de pessoas imunizadas muito grande. Daí conseguiríamos ver o efeito da campanha de vacinação como um todo, e não apenas parte da história como agora.
+
+
+```{r}
+write.csv(weekly_deaths,file="../data/weekly_deaths.csv")
+```
+
+
